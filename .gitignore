@@ -11,6 +11,7 @@ venv/
 
 # Streamlit
 data/
+.streamlit/secrets.toml
 
 # Jupyter
 .ipynb_checkpoints/
