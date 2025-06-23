@@ -4,7 +4,39 @@ import datetime
 import gspread
 from google.oauth2.service_account import Credentials
 from streamlit_option_menu import option_menu
+import sys
+import traceback
 
+# ===== PRODUCTION CONFIGURATION =====
+PRODUCTION_MODE = True  # Set to False for development mode
+
+def handle_error(message, exception=None):
+    """Display user-friendly error messages in production mode"""
+    if PRODUCTION_MODE:
+        # Google Sheets errors are completely hidden in production
+        if "Google Sheets" in message or "sheet" in message.lower():
+            # Log internally but don't show to user
+            if exception:
+                print(f"INTERNAL ERROR: {message} - {str(exception)}")
+            return
+            
+        # Show generic error for other issues
+        st.error("Terjadi kesalahan sistem. Silakan coba lagi atau hubungi administrator.")
+    else:
+        # Show detailed errors in development mode
+        if exception:
+            st.error(f"{message}: {str(exception)}")
+            st.text(traceback.format_exc())
+        else:
+            st.error(message)
+
+# Hide tracebacks from users
+def show_friendly_error():
+    exception = sys.exc_info()[1]
+    handle_error("Terjadi kesalahan sistem", exception)
+
+sys.excepthook = lambda exc_type, exc_value, exc_traceback: show_friendly_error()
+# ===== END PRODUCTION CONFIGURATION =====
 
 # Initialize session state for data
 if 'menu' not in st.session_state:
@@ -29,18 +61,18 @@ if 'payment_options' not in st.session_state:
     st.session_state.payment_options = []
 
 # Google Sheets setup
-
 SHEET_NAME = "POS_Transaction_Log"
 SCOPES = [
     'https://www.googleapis.com/auth/spreadsheets',
     'https://www.googleapis.com/auth/drive'
 ]
+
 @st.cache_resource(ttl=300)
 def get_google_sheets_connection():
     try:
         # Check if secrets are available
         if 'gcp_service_account' not in st.secrets:
-            st.error("Google Sheets credentials not found in secrets")
+            handle_error("Google Sheets credentials not found")
             return None
         
         # Get credentials from secrets
@@ -75,7 +107,7 @@ def get_google_sheets_connection():
         client = gspread.authorize(creds)
         return client
     except Exception as e:
-        st.error(f"Google Sheets connection error: {str(e)}")
+        handle_error("Google Sheets connection error", e)
         return None
         
 def get_sheet():
@@ -106,7 +138,7 @@ def get_sheet():
             
             return sheet
     except Exception as e:
-        st.error(f"Failed to access sheet: {str(e)}")
+        handle_error("Failed to access sheet", e)
         return None
 
 def log_transaction(transaction_id, timestamp, total, options, amount_paid, selected_option, items):
@@ -114,7 +146,7 @@ def log_transaction(transaction_id, timestamp, total, options, amount_paid, sele
         # Get sheet connection
         sheet = get_sheet()
         if not sheet:
-            return False
+            return False, "No sheet connection"
             
         # Format items for logging
         items_str = "; ".join([f"{item['name']} x {item['qty']}" for item in items])
@@ -137,10 +169,10 @@ def log_transaction(transaction_id, timestamp, total, options, amount_paid, sele
             items_str
         ])
         
-        return True
+        return True, ""
     except Exception as e:
-        st.error(f"Failed to log transaction: {str(e)}")
-        return False
+        handle_error("Failed to log transaction", e)
+        return False, str(e)
     
 # ENHANCED PAYMENT ALGORITHM WITH PRACTICAL OPTIONS
 def payment_options(total):
@@ -260,7 +292,7 @@ def pos_page():
         # Payment options section
         st.subheader("Payment Options")
         cols = st.columns(3)
-        button_labels = ["Optimal Pay", "Smart Pay", "Easy Pay"]
+        button_labels = [" ", " ", " "]
         button_descriptions = [
             "Most efficient amount",
             "Comfortable amount",
@@ -315,28 +347,24 @@ def pos_page():
                     st.session_state.transactions.append(new_transaction)
                     
                     # Log to Google Sheets in background
-                    try:
-                        log_success = log_transaction(
-                            transaction_id=transaction_id,
-                            timestamp=timestamp,
-                            total=total_price,
-                            options=options,
-                            amount_paid=amount_paid,
-                            selected_option=st.session_state.amount_paid,
-                            items=st.session_state.cart
-                        )
-                        
-                        if log_success:
-                            st.success("Transaction logged to Google Sheets")
-                        else:
-                            st.warning("Transaction saved locally but failed to log to Google Sheets")
-                    except Exception as e:
-                        st.error(f"Logging error: {str(e)}")
+                    log_success, log_message = log_transaction(
+                        transaction_id=transaction_id,
+                        timestamp=timestamp,
+                        total=total_price,
+                        options=options,
+                        amount_paid=amount_paid,
+                        selected_option=st.session_state.amount_paid,
+                        items=st.session_state.cart
+                    )
+                    
+                    if log_success:
+                        st.success("Transaction completed successfully!")
+                    else:
+                        st.success("Transaction completed!")
                     
                     # Reset cart
                     st.session_state.cart = []
                     st.session_state.amount_paid = 0
-                    st.success("Transaction completed successfully!")
         with col2:
             if st.button("Clear Cart", use_container_width=True):
                 st.session_state.cart = []
@@ -348,7 +376,7 @@ def pos_page():
                 st.session_state.amount_paid = 0
                 st.info("All items removed")
 
-# Menu Management Page (unchanged)
+# Menu Management Page
 def menu_page():
     st.header("🍔 Menu Management")
     
@@ -411,7 +439,7 @@ def menu_page():
             st.session_state.menu = [item for item in st.session_state.menu if item['id'] != menu_id]
             st.success("Item deleted successfully!")
 
-# Transactions Page (unchanged)
+# Transactions Page
 def transactions_page():
     st.header("📋 Transaction History")
     
@@ -513,7 +541,7 @@ with st.sidebar:
     st.divider()
     st.caption("Version 1.0 | © 2025 MZAIUE")
     
-    # Google Sheets status - only shown when requested
+    # Google Sheets status
     if st.button("Check Google Sheets Status"):
         try:
             client = get_google_sheets_connection()
@@ -521,7 +549,6 @@ with st.sidebar:
                 try:
                     spreadsheets = client.list_spreadsheet_files()
                     st.success("Google Sheets connected")
-                    st.info(f"Found {len(spreadsheets)} spreadsheets")
                     
                     # Check if our sheet exists
                     found = any(s['name'] == SHEET_NAME for s in spreadsheets)
@@ -536,11 +563,11 @@ with st.sidebar:
                     else:
                         st.warning(f"Spreadsheet '{SHEET_NAME}' not found")
                 except Exception as e:
-                    st.error(f"Connection error: {str(e)}")
+                    handle_error("Connection check error", e)
             else:
-                st.error("Failed to connect to Google Sheets")
+                st.warning("Google Sheets not connected")
         except Exception as e:
-            st.error(f"Error: {str(e)}")
+            handle_error("Connection check error", e)
 
 # Display selected page
 if selected == "POS":
