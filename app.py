@@ -6,6 +6,8 @@ from google.oauth2.service_account import Credentials
 from streamlit_option_menu import option_menu
 import sys
 import traceback
+from google.auth.transport.requests import Request
+import time
 
 # ===== PRODUCTION CONFIGURATION =====
 PRODUCTION_MODE = True  # Set to False for development mode
@@ -67,6 +69,23 @@ SCOPES = [
     'https://www.googleapis.com/auth/drive'
 ]
 
+def validate_credentials(credentials_dict):
+    """Validasi kredensial Google sebelum digunakan"""
+    try:
+        # Coba buat credentials
+        creds = Credentials.from_service_account_info(
+            credentials_dict,
+            scopes=SCOPES
+        )
+        
+        # Refresh token untuk memvalidasi
+        if creds.expired:
+            creds.refresh(Request())
+            
+        return True, "Credentials valid"
+    except Exception as e:
+        return False, f"Invalid credentials: {str(e)}"
+
 @st.cache_resource(ttl=300)
 def get_google_sheets_connection():
     try:
@@ -80,8 +99,17 @@ def get_google_sheets_connection():
         
         # Clean private key
         private_key = sa_info['private_key']
-        if '\\n' in private_key:
-            private_key = private_key.replace('\\n', '\n')
+        
+        # Perbaikan khusus untuk masalah JWT Signature:
+        # 1. Pastikan tidak ada spasi tambahan
+        private_key = private_key.strip()
+        
+        # 2. Ganti semua \\n dengan newline sebenarnya
+        private_key = private_key.replace('\\n', '\n')
+        
+        # 3. Hilangkan kutipan tambahan jika ada
+        if private_key.startswith('"') and private_key.endswith('"'):
+            private_key = private_key[1:-1]
         
         # Create credentials dictionary
         credentials_dict = {
@@ -97,6 +125,12 @@ def get_google_sheets_connection():
             "client_x509_cert_url": sa_info["client_x509_cert_url"]
         }
         
+        # Validasi kredensial sebelum digunakan
+        valid, msg = validate_credentials(credentials_dict)
+        if not valid:
+            handle_error(f"Invalid Google Sheets credentials: {msg}")
+            return None
+        
         # Create credentials
         creds = Credentials.from_service_account_info(
             credentials_dict,
@@ -109,7 +143,7 @@ def get_google_sheets_connection():
     except Exception as e:
         handle_error("Google Sheets connection error", e)
         return None
-        
+            
 def get_sheet():
     try:
         client = get_google_sheets_connection()
@@ -127,6 +161,9 @@ def get_sheet():
             sa_info = st.secrets["gcp_service_account"]
             spreadsheet.share(sa_info['client_email'], perm_type='user', role='writer')
             
+            # Tunggu sebentar agar spreadsheet benar-benar terbentuk
+            time.sleep(2)
+            
             sheet = spreadsheet.sheet1
             
             # Add headers
@@ -137,6 +174,10 @@ def get_sheet():
             ])
             
             return sheet
+        except gspread.exceptions.APIError as api_err:
+            # Tangani error API secara khusus
+            handle_error(f"Google Sheets API error: {api_err.response.text}")
+            return None
     except Exception as e:
         handle_error("Failed to access sheet", e)
         return None
